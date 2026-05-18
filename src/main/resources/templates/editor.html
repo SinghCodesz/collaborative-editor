@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <title>Collaborative Editor</title>
+
+    <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
+
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            background: #f0f2f5;
+        }
+        .header {
+            background: white;
+            padding: 15px 20px;
+            border-bottom: 1px solid #ddd;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .header h2 { font-size: 18px; color: #333; }
+        #status {
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 13px;
+        }
+        .connected { background: #e6f7e6; color: #2e7d32; }
+        .disconnected { background: #fdecea; color: #c62828; }
+        .container {
+            display: flex;
+            height: calc(100vh - 60px);
+        }
+        .toolbar {
+            background: white;
+            padding: 8px 15px;
+            border-bottom: 1px solid #ddd;
+            display: flex;
+            gap: 5px;
+        }
+        .toolbar button {
+            padding: 6px 12px;
+            border: 1px solid #ddd;
+            background: white;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .toolbar button:hover { background: #f0f0f0; }
+        .main-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+        #editor {
+            flex: 1;
+            padding: 20px;
+            font-size: 16px;
+            line-height: 1.6;
+            outline: none;
+            background: white;
+            margin: 20px;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            overflow-y: auto;
+        }
+        .sidebar {
+            width: 220px;
+            background: white;
+            padding: 15px;
+            border-left: 1px solid #ddd;
+        }
+        .sidebar h3 {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+        }
+        .user {
+            padding: 8px 10px;
+            margin-bottom: 5px;
+            border-radius: 6px;
+            background: #f8f9fa;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+        }
+        .user-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+    </style>
+</head>
+<body>
+<div class="header">
+    <h2>Document: <span th:text="${document.title}">Loading...</span></h2>
+    <span id="status" class="disconnected">Disconnected</span>
+</div>
+
+<div class="container">
+    <div class="main-area">
+        <div class="toolbar">
+            <button onclick="format('bold')"><b>B</b></button>
+            <button onclick="format('italic')"><i>I</i></button>
+            <button onclick="format('underline')"><u>U</u></button>
+        </div>
+
+        <div id="editor" contenteditable="true">
+            <p>Start typing...</p>
+        </div>
+    </div>
+
+    <div class="sidebar">
+        <h3>Connected Users</h3>
+        <div id="userList">
+            <div class="user">
+                <span class="user-dot" style="background:#4caf50"></span>
+                <span id="currentUserName">You</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script th:inline="javascript">
+    var stompClient = null;
+    var documentId = /*[[${document.id}]]*/ 1;
+    var userId = "user-" + Math.random().toString(36).substr(2, 6);
+    var isLocalChange = false;
+
+    function connect() {
+        var socket = new SockJS('/ws');
+        stompClient = Stomp.over(socket);
+        stompClient.debug = null;
+
+        stompClient.connect({}, function(frame) {
+            console.log('Connected to WebSocket');
+            updateStatus(true);
+
+            stompClient.subscribe('/topic/document/' + documentId, function(message) {
+                var payload = JSON.parse(message.body);
+                handleRemoteChange(payload);
+            });
+        }, function(error) {
+            console.log('Connection lost, reconnecting...');
+            updateStatus(false);
+            setTimeout(connect, 2000);
+        });
+    }
+
+    function updateStatus(connected) {
+        var statusEl = document.getElementById('status');
+        if (connected) {
+            statusEl.textContent = 'Connected';
+            statusEl.className = 'connected';
+        } else {
+            statusEl.textContent = 'Disconnected';
+            statusEl.className = 'disconnected';
+        }
+    }
+
+    document.getElementById('editor').addEventListener('input', function() {
+        if (isLocalChange) return;
+
+        if (stompClient && stompClient.connected) {
+            var content = this.innerHTML;
+            stompClient.send('/app/document/' + documentId + '/edit', {},
+                JSON.stringify({
+                    content: content,
+                    userId: userId,
+                    timestamp: Date.now()
+                })
+            );
+        }
+    });
+
+    function handleRemoteChange(payload) {
+        if (payload.userId === userId) return;
+
+        console.log('Received remote change from', payload.userId);
+
+        isLocalChange = true;
+        document.getElementById('editor').innerHTML = payload.content;
+        isLocalChange = false;
+    }
+
+    function format(command) {
+        document.execCommand(command, false, null);
+        document.getElementById('editor').focus();
+        document.getElementById('editor').dispatchEvent(new Event('input'));
+    }
+
+    connect();
+
+    fetch('/api/documents/' + documentId)
+        .then(function(res) { return res.json(); })
+        .then(function(doc) {
+            if (doc.content) {
+                document.getElementById('editor').innerHTML = doc.content;
+            }
+        });
+</script>
+</body>
+</html>
