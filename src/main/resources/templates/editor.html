@@ -130,23 +130,25 @@
     var stompClient = null;
     var documentId = /*[[${document.id}]]*/ 1;
     var userId = "user-" + Math.random().toString(36).substr(2, 6);
-    var isLocalChange = false;
+    var sequenceNumber = 0;
+    var isRemoteChange = false;
 
+    // ============= CONNECTION =============
     function connect() {
         var socket = new SockJS('/ws');
         stompClient = Stomp.over(socket);
         stompClient.debug = null;
 
         stompClient.connect({}, function(frame) {
-            console.log('Connected to WebSocket');
+            console.log('✅ Connected to WebSocket');
             updateStatus(true);
 
             stompClient.subscribe('/topic/document/' + documentId, function(message) {
                 var payload = JSON.parse(message.body);
-                handleRemoteChange(payload);
+                handleRemoteOperation(payload);
             });
         }, function(error) {
-            console.log('Connection lost, reconnecting...');
+            console.log('❌ Connection lost, reconnecting...');
             updateStatus(false);
             setTimeout(connect, 2000);
         });
@@ -155,52 +157,126 @@
     function updateStatus(connected) {
         var statusEl = document.getElementById('status');
         if (connected) {
-            statusEl.textContent = 'Connected';
+            statusEl.textContent = '🟢 Connected';
             statusEl.className = 'connected';
         } else {
-            statusEl.textContent = 'Disconnected';
+            statusEl.textContent = '🔴 Disconnected';
             statusEl.className = 'disconnected';
         }
     }
 
-    document.getElementById('editor').addEventListener('input', function() {
-        if (isLocalChange) return;
+    // ============= CAPTURE LOCAL EDITS AS OPERATIONS =============
+    document.getElementById('editor').addEventListener('keydown', function(e) {
+        if (isRemoteChange) return;
 
-        if (stompClient && stompClient.connected) {
-            var content = this.innerHTML;
-            stompClient.send('/app/document/' + documentId + '/edit', {},
-                JSON.stringify({
-                    content: content,
-                    userId: userId,
-                    timestamp: Date.now()
-                })
-            );
-        }
+        // Get cursor position before the key is processed
+        var position = getCursorPosition();
+
+        // We'll process the actual character on 'input' event
+        // Store the position for the next input event
+        this.dataset.lastKeyPosition = position;
+        this.dataset.lastKey = e.key;
     });
 
-    function handleRemoteChange(payload) {
+    document.getElementById('editor').addEventListener('input', function(e) {
+        if (isRemoteChange) return;
+        if (!stompClient || !stompClient.connected) return;
+
+        var position = parseInt(this.dataset.lastKeyPosition || 0);
+        var key = this.dataset.lastKey || '';
+
+        // Determine if insert or delete
+        var opType, character;
+
+        if (e.inputType === 'deleteContentBackward' || e.inputType === 'deleteContentForward') {
+            opType = 'DELETE';
+            character = '';
+            // Adjust position for backspace
+            if (e.inputType === 'deleteContentBackward') {
+                position = Math.max(0, position - 1);
+            }
+        } else if (e.inputType === 'insertText' && e.data) {
+            opType = 'INSERT';
+            character = e.data;
+        } else {
+            return; // Ignore other input types
+        }
+
+        sequenceNumber++;
+
+        // Send operation to server
+        stompClient.send('/app/document/' + documentId + '/edit', {},
+            JSON.stringify({
+                type: opType,
+                position: position,
+                character: character,
+                userId: userId,
+                timestamp: Date.now(),
+                sequenceNumber: sequenceNumber
+            })
+        );
+
+        console.log('📤 Sent:', opType, 'at', position,
+            opType === 'INSERT' ? "'" + character + "'" : '');
+    });
+
+    // ============= HANDLE REMOTE OPERATIONS =============
+    function handleRemoteOperation(payload) {
+        // Ignore our own operations
         if (payload.userId === userId) return;
 
-        console.log('Received remote change from', payload.userId);
+        console.log('📥 Received from', payload.userId + ':',
+            payload.type, 'at', payload.position);
 
-        isLocalChange = true;
-        document.getElementById('editor').innerHTML = payload.content;
-        isLocalChange = false;
+        isRemoteChange = true;
+
+        var editor = document.getElementById('editor');
+        var text = editor.innerText || editor.textContent;
+
+        if (payload.type === 'INSERT') {
+            text = text.substring(0, payload.position) +
+                payload.character +
+                text.substring(payload.position);
+        } else if (payload.type === 'DELETE') {
+            if (payload.position >= 0 && payload.position < text.length) {
+                text = text.substring(0, payload.position) +
+                    text.substring(payload.position + 1);
+            }
+        }
+
+        editor.innerText = text;
+
+        isRemoteChange = false;
     }
 
+    // ============= CURSOR POSITION =============
+    function getCursorPosition() {
+        var selection = window.getSelection();
+        if (selection.rangeCount === 0) return 0;
+
+        var range = selection.getRangeAt(0);
+        var preCursorRange = document.createRange();
+        preCursorRange.selectNodeContents(document.getElementById('editor'));
+        preCursorRange.setEnd(range.endContainer, range.endOffset);
+
+        return preCursorRange.toString().length;
+    }
+
+    // ============= TOOLBAR =============
     function format(command) {
         document.execCommand(command, false, null);
         document.getElementById('editor').focus();
-        document.getElementById('editor').dispatchEvent(new Event('input'));
     }
 
+    // ============= INIT =============
     connect();
 
+    // Load document content
     fetch('/api/documents/' + documentId)
         .then(function(res) { return res.json(); })
         .then(function(doc) {
             if (doc.content) {
-                document.getElementById('editor').innerHTML = doc.content;
+                document.getElementById('editor').innerText = doc.content;
             }
         });
 </script>
