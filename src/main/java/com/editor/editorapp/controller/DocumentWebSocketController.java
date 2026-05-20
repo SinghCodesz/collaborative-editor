@@ -27,7 +27,6 @@ public class DocumentWebSocketController {
             @DestinationVariable Long id,
             Map<String, Object> payload) {
 
-        // Extract operation from payload
         String type = (String) payload.get("type");
         int position = (int) payload.get("position");
         String character = (String) payload.getOrDefault("character", "");
@@ -44,21 +43,14 @@ public class DocumentWebSocketController {
                 sequenceNumber
         );
 
-        System.out.println("📝 Received: " + incomingOp);
-
-        // Transform the operation against concurrent operations
         Operation transformedOp = otService.transform(id, incomingOp);
 
-        System.out.println("🔄 Transformed: " + transformedOp);
-
-        // Apply to the authoritative document state
         documentService.getDocument(id).ifPresent(doc -> {
             String newContent = otService.applyOperation(doc.getContent(), transformedOp);
             doc.setContent(newContent);
             documentService.updateDocument(id, newContent);
         });
 
-        // Return transformed operation to broadcast
         return Map.of(
                 "type", transformedOp.getType().name(),
                 "position", transformedOp.getPosition(),
@@ -67,5 +59,18 @@ public class DocumentWebSocketController {
                 "timestamp", transformedOp.getTimestamp(),
                 "sequenceNumber", transformedOp.getSequenceNumber()
         );
+    }
+
+    @MessageMapping("/document/{id}/cursor")
+    @SendTo("/topic/document/{id}/cursors")
+    public Map<String, Object> handleCursor(
+            @DestinationVariable Long id,
+            Map<String, Object> payload) {
+
+        System.out.println("Cursor update for doc " + id +
+                " from " + payload.get("userName") +
+                " at position " + payload.get("position"));
+
+        return payload;
     }
 }

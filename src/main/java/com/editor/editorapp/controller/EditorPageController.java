@@ -19,7 +19,10 @@ public class EditorPageController {
     @GetMapping("/editor/{id}")
     public String editorPage(@PathVariable Long id, Model model) {
         Document doc = documentService.getDocument(id)
-                .orElseThrow(() -> new RuntimeException("Document not found: " + id));
+                .orElse(null);
+        if (doc == null) {
+            doc = documentService.createDocument("Untitled", "");
+        }
         model.addAttribute("document", doc);
         return "editor";
     }
