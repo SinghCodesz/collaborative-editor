@@ -169,6 +169,9 @@
             <button onclick="format('bold')"><b>B</b></button>
             <button onclick="format('italic')"><i>I</i></button>
             <button onclick="format('underline')"><u>U</u></button>
+            <span style="margin-left:20px;border-left:1px solid #ddd;padding-left:15px;"></span>
+            <button onclick="undo()" title="Undo (Ctrl+Z)">↩️ Undo</button>
+            <button onclick="redo()" title="Redo (Ctrl+Y)">↪️ Redo</button>
         </div>
 
         <div id="editor" contenteditable="true">
@@ -193,6 +196,9 @@
     var userId = "user-" + Math.random().toString(36).substr(2, 6);
     var sequenceNumber = 0;
     var isRemoteChange = false;
+    var undoStack = [];
+    var redoStack = [];
+    var MAX_UNDO = 50;
 
     // ============= CONNECTION =============
     function connect() {
@@ -208,14 +214,11 @@
                 var payload = JSON.parse(message.body);
                 handleRemoteOperation(payload);
             });
-            // Subscribe to cursor updates
             stompClient.subscribe('/topic/document/' + documentId + '/cursors', function(message) {
                 var payload = JSON.parse(message.body);
                 handleRemoteCursor(payload);
             });
-            // Send initial cursor position
             setTimeout(sendCursorPosition, 500);
-
         }, function(error) {
             console.log('❌ Connection lost, reconnecting...');
             updateStatus(false);
@@ -234,15 +237,10 @@
         }
     }
 
-    // ============= CAPTURE LOCAL EDITS AS OPERATIONS =============
+    // ============= CAPTURE LOCAL EDITS =============
     document.getElementById('editor').addEventListener('keydown', function(e) {
         if (isRemoteChange) return;
-
-        // Get cursor position before the key is processed
         var position = getCursorPosition();
-
-        // We'll process the actual character on 'input' event
-        // Store the position for the next input event
         this.dataset.lastKeyPosition = position;
         this.dataset.lastKey = e.key;
     });
@@ -253,14 +251,16 @@
 
         var position = parseInt(this.dataset.lastKeyPosition || 0);
         var key = this.dataset.lastKey || '';
-
-        // Determine if insert or delete
         var opType, character;
 
         if (e.inputType === 'deleteContentBackward' || e.inputType === 'deleteContentForward') {
             opType = 'DELETE';
-            character = '';
-            // Adjust position for backspace
+            var currentText = document.getElementById('editor').innerText || '';
+            var deletePos = position;
+            if (e.inputType === 'deleteContentBackward') {
+                deletePos = Math.max(0, position - 1);
+            }
+            character = currentText.charAt(deletePos);
             if (e.inputType === 'deleteContentBackward') {
                 position = Math.max(0, position - 1);
             }
@@ -268,12 +268,11 @@
             opType = 'INSERT';
             character = e.data;
         } else {
-            return; // Ignore other input types
+            return;
         }
 
         sequenceNumber++;
 
-        // Send operation to server
         stompClient.send('/app/document/' + documentId + '/edit', {},
             JSON.stringify({
                 type: opType,
@@ -287,49 +286,170 @@
 
         console.log('📤 Sent:', opType, 'at', position,
             opType === 'INSERT' ? "'" + character + "'" : '');
+
+        // Push to undo stack
+        undoStack.push({
+            type: opType,
+            position: position,
+            character: character
+        });
+        redoStack = [];
+        if (undoStack.length > MAX_UNDO) {
+            undoStack.shift();
+        }
     });
+
+    // ============= UNDO =============
+    function undo() {
+        if (undoStack.length === 0) return;
+
+        var action = undoStack.pop();
+        var reverseOp;
+        if (action.type === 'INSERT') {
+            reverseOp = {
+                type: 'DELETE',
+                position: action.position,
+                character: ''
+            };
+        } else if (action.type === 'DELETE') {
+            reverseOp = {
+                type: 'INSERT',
+                position: action.position,
+                character: action.character
+            };
+        }
+
+        isRemoteChange = true;
+        var editor = document.getElementById('editor');
+        var text = editor.innerText || editor.textContent;
+
+        if (reverseOp.type === 'INSERT') {
+            text = text.substring(0, reverseOp.position) +
+                reverseOp.character +
+                text.substring(reverseOp.position);
+        } else if (reverseOp.type === 'DELETE') {
+            if (reverseOp.position >= 0 && reverseOp.position < text.length) {
+                text = text.substring(0, reverseOp.position) +
+                    text.substring(reverseOp.position + 1);
+            }
+        }
+
+        editor.innerText = text;
+        isRemoteChange = false;
+        redoStack.push(action);
+
+        if (stompClient && stompClient.connected) {
+            sequenceNumber++;
+            stompClient.send('/app/document/' + documentId + '/edit', {},
+                JSON.stringify({
+                    type: reverseOp.type,
+                    position: reverseOp.position,
+                    character: reverseOp.character,
+                    userId: userId,
+                    timestamp: Date.now(),
+                    sequenceNumber: sequenceNumber
+                })
+            );
+        }
+
+        console.log('↩️ Undo:', action.type, 'at', action.position);
+    }
+
+    // ============= REDO =============
+    function redo() {
+        if (redoStack.length === 0) return;
+
+        var action = redoStack.pop();
+
+        isRemoteChange = true;
+        var editor = document.getElementById('editor');
+        var text = editor.innerText || editor.textContent;
+
+        if (action.type === 'INSERT') {
+            text = text.substring(0, action.position) +
+                action.character +
+                text.substring(action.position);
+        } else if (action.type === 'DELETE') {
+            if (action.position >= 0 && action.position < text.length) {
+                text = text.substring(0, action.position) +
+                    text.substring(action.position + 1);
+            }
+        }
+
+        editor.innerText = text;
+        isRemoteChange = false;
+        undoStack.push(action);
+
+        if (stompClient && stompClient.connected) {
+            sequenceNumber++;
+            stompClient.send('/app/document/' + documentId + '/edit', {},
+                JSON.stringify({
+                    type: action.type,
+                    position: action.position,
+                    character: action.character,
+                    userId: userId,
+                    timestamp: Date.now(),
+                    sequenceNumber: sequenceNumber
+                })
+            );
+        }
+
+        console.log('↪️ Redo:', action.type, 'at', action.position);
+    }
+
+    // ============= HANDLE REMOTE OPERATIONS =============
+    function handleRemoteOperation(payload) {
+        if (payload.userId === userId) return;
+
+        console.log('📥 Received from', payload.userId + ':',
+            payload.type, 'at', payload.position);
+
+        isRemoteChange = true;
+        var editor = document.getElementById('editor');
+        var text = editor.innerText || editor.textContent;
+
+        if (payload.type === 'INSERT') {
+            text = text.substring(0, payload.position) +
+                payload.character +
+                text.substring(payload.position);
+        } else if (payload.type === 'DELETE') {
+            if (payload.position >= 0 && payload.position < text.length) {
+                text = text.substring(0, payload.position) +
+                    text.substring(payload.position + 1);
+            }
+        }
+
+        editor.innerText = text;
+        isRemoteChange = false;
+    }
 
     // ============= HANDLE REMOTE CURSOR =============
     function handleRemoteCursor(payload) {
         if (payload.userId === userId) return;
-
-        // Store cursor data
         remoteCursors[payload.userId] = {
             color: payload.color,
             name: payload.userName,
             position: payload.position
         };
-
-        // Render all remote cursors
         renderRemoteCursors();
-
-        // Update user list
         updateUserList();
     }
 
     // ============= RENDER REMOTE CURSORS =============
-
     function renderRemoteCursors() {
         var editor = document.getElementById('editor');
-
-        // Remove old cursor elements
         var oldCursors = editor.querySelectorAll('.remote-cursor, .cursor-label');
         oldCursors.forEach(function(el) { el.remove(); });
 
-        // Render each remote cursor
         for (var uid in remoteCursors) {
             var cursor = remoteCursors[uid];
             var pos = cursor.position;
-
             var fullText = editor.innerText || '';
             var textBeforeCursor = fullText.substring(0, Math.min(pos, fullText.length));
-
-            // Count newlines to determine which line
             var lines = textBeforeCursor.split('\n');
-            var lineNumber = lines.length - 1;  // 0-based: which line is cursor on
-            var textOnCurrentLine = lines[lineNumber];  // text on the current line only
+            var lineNumber = lines.length - 1;
+            var textOnCurrentLine = lines[lineNumber];
 
-            // Measure the text on the current line using canvas
             var canvas = document.createElement('canvas');
             var ctx = canvas.getContext('2d');
             ctx.font = '16px "Segoe UI", Arial, sans-serif';
@@ -338,7 +458,6 @@
             var left = 20 + textWidth;
             var top = 20 + (lineNumber * 24);
 
-            // Create cursor line
             var cursorEl = document.createElement('div');
             cursorEl.className = 'remote-cursor';
             cursorEl.style.backgroundColor = cursor.color;
@@ -351,7 +470,6 @@
             cursorEl.style.zIndex = '100';
             editor.appendChild(cursorEl);
 
-            // Create name label
             var labelEl = document.createElement('div');
             labelEl.className = 'cursor-label';
             labelEl.style.backgroundColor = cursor.color;
@@ -370,18 +488,14 @@
         }
     }
 
-    // ============= UPDATE USER LIST SIDEBAR =============
+    // ============= UPDATE USER LIST =============
     function updateUserList() {
         var userListEl = document.getElementById('userList');
         var html = '';
-
-        // Current user
         html += '<div class="user">';
         html += '<span class="user-dot" style="background:' + userColor + '"></span>';
         html += '<span>' + userName + ' (You)</span>';
         html += '</div>';
-
-        // Remote users
         var count = 0;
         for (var uid in remoteCursors) {
             var cursor = remoteCursors[uid];
@@ -391,53 +505,19 @@
             html += '</div>';
             count++;
         }
-
         userListEl.innerHTML = html;
         document.getElementById('userCount').textContent = count + 1;
-    }
-
-    // ============= HANDLE REMOTE OPERATIONS =============
-    function handleRemoteOperation(payload) {
-        // Ignore our own operations
-        if (payload.userId === userId) return;
-
-        console.log('📥 Received from', payload.userId + ':',
-            payload.type, 'at', payload.position);
-
-        isRemoteChange = true;
-
-        var editor = document.getElementById('editor');
-        var text = editor.innerText || editor.textContent;
-
-        if (payload.type === 'INSERT') {
-            text = text.substring(0, payload.position) +
-                payload.character +
-                text.substring(payload.position);
-        } else if (payload.type === 'DELETE') {
-            if (payload.position >= 0 && payload.position < text.length) {
-                text = text.substring(0, payload.position) +
-                    text.substring(payload.position + 1);
-            }
-        }
-
-        editor.innerText = text;
-
-        isRemoteChange = false;
     }
 
     // ============= CURSOR POSITION =============
     function getCursorPosition() {
         var selection = window.getSelection();
         if (selection.rangeCount === 0) return 0;
-
         var range = selection.getRangeAt(0);
         var editor = document.getElementById('editor');
-
-        // Create a range from the start of the editor to current cursor
         var preCursorRange = document.createRange();
         preCursorRange.selectNodeContents(editor);
         preCursorRange.setEnd(range.endContainer, range.endOffset);
-
         return preCursorRange.toString().length;
     }
 
@@ -447,10 +527,21 @@
         document.getElementById('editor').focus();
     }
 
+    // ============= KEYBOARD SHORTCUTS =============
+    document.addEventListener('keydown', function(e) {
+        if (e.ctrlKey && e.key === 'z' && !e.shiftKey) {
+            e.preventDefault();
+            undo();
+        }
+        if ((e.ctrlKey && e.key === 'y') || (e.ctrlKey && e.shiftKey && e.key === 'z')) {
+            e.preventDefault();
+            redo();
+        }
+    });
+
     // ============= INIT =============
     connect();
 
-    // Load document content
     fetch('/api/documents/' + documentId)
         .then(function(res) { return res.json(); })
         .then(function(doc) {
