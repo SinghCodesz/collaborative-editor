@@ -16,6 +16,11 @@ public class EditorPageController {
         this.documentService = documentService;
     }
 
+    @GetMapping("/")
+    public String homePage() {
+        return "document-list";
+    }
+
     @GetMapping("/editor/{id}")
     public String editorPage(@PathVariable Long id, Model model) {
         Document doc = documentService.getDocument(id)

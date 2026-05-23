@@ -159,7 +159,10 @@
 </head>
 <body>
 <div class="header">
-    <h2>Document: <span th:text="${document.title}">Loading...</span></h2>
+    <div style="display:flex;align-items:center;gap:15px;">
+        <a href="/" style="text-decoration:none;color:#1976d2;font-size:14px;">← My Documents</a>
+        <h2>Document: <span th:text="${document.title}">Loading...</span></h2>
+    </div>
     <span id="status" class="disconnected">Disconnected</span>
 </div>
 
