@@ -155,6 +155,11 @@
             border-radius: 50%;
             display: inline-block;
         }
+        #saveStatus {
+            font-size: 12px;
+            min-width: 60px;
+            text-align: right;
+        }
     </style>
 </head>
 <body>
@@ -163,7 +168,10 @@
         <a href="/" style="text-decoration:none;color:#1976d2;font-size:14px;">← My Documents</a>
         <h2>Document: <span th:text="${document.title}">Loading...</span></h2>
     </div>
-    <span id="status" class="disconnected">Disconnected</span>
+    <div style="display:flex;align-items:center;gap:12px;">
+        <span id="saveStatus" style="font-size:12px;color:#999;"></span>
+        <span id="status" class="disconnected">Disconnected</span>
+    </div>
 </div>
 
 <div class="container">
@@ -202,6 +210,10 @@
     var undoStack = [];
     var redoStack = [];
     var MAX_UNDO = 50;
+    var autoSaveTimer = null;
+    var AUTO_SAVE_DELAY = 2000; // 2 seconds after typing stops
+    var isSaving = false;
+    var lastSavedContent = '';
 
     // ============= CONNECTION =============
     function connect() {
@@ -300,6 +312,12 @@
         if (undoStack.length > MAX_UNDO) {
             undoStack.shift();
         }
+        // ===== ADD THIS at the end of the input event listener =====
+        // Reset auto-save timer (debounce)
+        if (autoSaveTimer) {
+            clearTimeout(autoSaveTimer);
+        }
+        autoSaveTimer = setTimeout(autoSave, AUTO_SAVE_DELAY);
     });
 
     // ============= UNDO =============
@@ -542,6 +560,59 @@
         }
     });
 
+    // ============= AUTO-SAVE =============
+    function autoSave() {
+        if (isSaving) return;
+
+        var editor = document.getElementById('editor');
+        var currentContent = editor.innerText || editor.textContent || '';
+
+        // Don't save if nothing changed
+        if (currentContent === lastSavedContent) {
+            updateSaveStatus('Saved');
+            return;
+        }
+
+        isSaving = true;
+        updateSaveStatus('Saving...');
+
+        fetch('/api/documents/' + documentId, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: currentContent })
+        })
+            .then(function(res) {
+                if (!res.ok) throw new Error('Save failed');
+                return res.json();
+            })
+            .then(function(doc) {
+                lastSavedContent = currentContent;
+                updateSaveStatus('Saved');
+                isSaving = false;
+            })
+            .catch(function(err) {
+                console.error('Auto-save failed:', err);
+                updateSaveStatus('Error saving');
+                isSaving = false;
+                // Retry after 5 seconds
+                setTimeout(autoSave, 5000);
+            });
+    }
+
+    function updateSaveStatus(message) {
+        var saveEl = document.getElementById('saveStatus');
+        if (saveEl) {
+            saveEl.textContent = message;
+            if (message === 'Saving...') {
+                saveEl.style.color = '#f0ad4e';
+            } else if (message === 'Saved') {
+                saveEl.style.color = '#5cb85c';
+            } else if (message.startsWith('Error')) {
+                saveEl.style.color = '#d9534f';
+            }
+        }
+    }
+
     // ============= INIT =============
     connect();
 
@@ -550,8 +621,24 @@
         .then(function(doc) {
             if (doc.content) {
                 document.getElementById('editor').innerText = doc.content;
+                lastSavedContent = doc.content;
             }
         });
+    // Save before leaving the page
+    window.addEventListener('beforeunload', function() {
+        if (autoSaveTimer) {
+            clearTimeout(autoSaveTimer);
+        }
+        // Synchronous save on page exit
+        var editor = document.getElementById('editor');
+        var content = editor.innerText || editor.textContent || '';
+
+        if (content !== lastSavedContent && navigator.sendBeacon) {
+            var blob = new Blob([JSON.stringify({ content: content })],
+                { type: 'application/json' });
+            navigator.sendBeacon('/api/documents/' + documentId, blob);
+        }
+    });
 </script>
 </body>
 </html>
