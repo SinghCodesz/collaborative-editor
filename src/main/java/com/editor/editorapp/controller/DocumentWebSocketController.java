@@ -3,6 +3,7 @@ package com.editor.editorapp.controller;
 import com.editor.editorapp.model.Operation;
 import com.editor.editorapp.service.DocumentService;
 import com.editor.editorapp.service.OTService;
+import com.editor.editorapp.util.RateLimiter;
 import org.springframework.messaging.handler.annotation.DestinationVariable;
 import org.springframework.messaging.handler.annotation.MessageMapping;
 import org.springframework.messaging.handler.annotation.SendTo;
@@ -15,10 +16,12 @@ public class DocumentWebSocketController {
 
     private final OTService otService;
     private final DocumentService documentService;
+    private final RateLimiter ratelimiter;
 
     public DocumentWebSocketController(OTService otService, DocumentService documentService) {
         this.otService = otService;
         this.documentService = documentService;
+        this.ratelimiter = new RateLimiter(10); // 10 ops/sec per user
     }
 
     @MessageMapping("/document/{id}/edit")
@@ -27,10 +30,18 @@ public class DocumentWebSocketController {
             @DestinationVariable Long id,
             Map<String, Object> payload) {
 
+
+        String userId = (String) payload.get("userId");
+
+        //RATE LIMIT CHECK
+        if (!ratelimiter.allowRequest(userId)) {
+            System.out.println("⚠️ Rate limited user: " + userId);
+            return Map.of("type", "RATE_LIMITED", "userId", userId);
+        }
+
         String type = (String) payload.get("type");
         int position = (int) payload.get("position");
         String character = (String) payload.getOrDefault("character", "");
-        String userId = (String) payload.get("userId");
         long timestamp = (long) payload.getOrDefault("timestamp", System.currentTimeMillis());
         int sequenceNumber = (int) payload.getOrDefault("sequenceNumber", 0);
 
@@ -43,7 +54,11 @@ public class DocumentWebSocketController {
                 sequenceNumber
         );
 
+        System.out.println("📝 Received: " + incomingOp);
+
         Operation transformedOp = otService.transform(id, incomingOp);
+
+        System.out.println("🔄 Transformed: " + transformedOp);
 
         documentService.getDocument(id).ifPresent(doc -> {
             String newContent = otService.applyOperation(doc.getContent(), transformedOp);

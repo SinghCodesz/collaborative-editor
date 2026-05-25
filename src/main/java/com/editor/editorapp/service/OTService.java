@@ -188,9 +188,10 @@ public class OTService {
     public String applyOperation(String content, Operation op) {
         if (op.getType() == Operation.OpType.INSERT) {
             // Insert character at position
-            return content.substring(0, op.getPosition()) +
+            int pos = Math.min(op.getPosition(), content.length());
+            return content.substring(0, pos) +
                     op.getCharacter() +
-                    content.substring(op.getPosition());
+                    content.substring(pos);
         } else if (op.getType() == Operation.OpType.DELETE) {
             // Delete character at position
             if (op.getPosition() >= 0 && op.getPosition() < content.length()) {

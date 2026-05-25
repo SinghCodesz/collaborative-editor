@@ -214,6 +214,8 @@
     var AUTO_SAVE_DELAY = 2000; // 2 seconds after typing stops
     var isSaving = false;
     var lastSavedContent = '';
+    var isRateLimited = false;
+    var rateLimitRecoveryTimer = null;
 
     // ============= CONNECTION =============
     function connect() {
@@ -249,6 +251,27 @@
         } else {
             statusEl.textContent = '🔴 Disconnected';
             statusEl.className = 'disconnected';
+        }
+    }
+
+    // ============= RATE LIMIT HANDLING =============
+    function handleRateLimited() {
+        if (!isRateLimited) {
+            isRateLimited = true;
+            updateSaveStatus('⚠️ Too fast! Slowing down...');
+
+            // Disable editor briefly
+            document.getElementById('editor').style.opacity = '0.5';
+
+            // Recover after 1 second
+            if (rateLimitRecoveryTimer) {
+                clearTimeout(rateLimitRecoveryTimer);
+            }
+            rateLimitRecoveryTimer = setTimeout(function() {
+                isRateLimited = false;
+                document.getElementById('editor').style.opacity = '1';
+                updateSaveStatus('Saved');
+            }, 1000);
         }
     }
 
@@ -420,6 +443,14 @@
 
     // ============= HANDLE REMOTE OPERATIONS =============
     function handleRemoteOperation(payload) {
+        if (payload.type === 'Rate_Limited') {
+            if (payload.userId === userId) {
+                handlrRateLimited();
+            }
+            return;
+        }
+
+        //Ignore our own operations
         if (payload.userId === userId) return;
 
         console.log('📥 Received from', payload.userId + ':',
