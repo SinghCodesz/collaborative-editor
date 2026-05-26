@@ -4,6 +4,8 @@ import com.editor.editorapp.model.Operation;
 import com.editor.editorapp.service.DocumentService;
 import com.editor.editorapp.service.OTService;
 import com.editor.editorapp.util.RateLimiter;
+import com.editor.editorapp.service.RedisMessagePublisher;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.messaging.handler.annotation.DestinationVariable;
 import org.springframework.messaging.handler.annotation.MessageMapping;
 import org.springframework.messaging.handler.annotation.SendTo;
@@ -17,11 +19,13 @@ public class DocumentWebSocketController {
     private final OTService otService;
     private final DocumentService documentService;
     private final RateLimiter ratelimiter;
+    private final RedisMessagePublisher redisPublisher;
 
-    public DocumentWebSocketController(OTService otService, DocumentService documentService) {
+    public DocumentWebSocketController(OTService otService, DocumentService documentService, RedisMessagePublisher redisPublisher) {
         this.otService = otService;
         this.documentService = documentService;
         this.ratelimiter = new RateLimiter(10); // 10 ops/sec per user
+        this.redisPublisher = redisPublisher;
     }
 
     @MessageMapping("/document/{id}/edit")
@@ -66,7 +70,8 @@ public class DocumentWebSocketController {
             documentService.updateDocument(id, newContent);
         });
 
-        return Map.of(
+        // Build the message payload
+        Map<String, Object> broadcastPayload = Map.of(
                 "type", transformedOp.getType().name(),
                 "position", transformedOp.getPosition(),
                 "character", transformedOp.getCharacter(),
@@ -74,6 +79,17 @@ public class DocumentWebSocketController {
                 "timestamp", transformedOp.getTimestamp(),
                 "sequenceNumber", transformedOp.getSequenceNumber()
         );
+
+        // Publish to Redis for cross-server broadcasting
+        try {
+            String messageJson = new com.fasterxml.jackson.databind.ObjectMapper()
+                    .writeValueAsString(broadcastPayload);
+            redisPublisher.publishOperation(id, messageJson);
+        } catch (Exception e) {
+            System.err.println("Failed to publish to Redis: " + e.getMessage());
+        }
+
+        return broadcastPayload;
     }
 
     @MessageMapping("/document/{id}/cursor")
@@ -85,6 +101,14 @@ public class DocumentWebSocketController {
         System.out.println("Cursor update for doc " + id +
                 " from " + payload.get("userName") +
                 " at position " + payload.get("position"));
+
+        // Publish to Redis for cross-server broadcasting
+        try {
+            String messageJson = new ObjectMapper().writeValueAsString(payload);
+            redisPublisher.publishCursor(id, messageJson);
+        } catch (Exception e) {
+            System.err.println("Failed to publish cursor to Redis: " + e.getMessage());
+        }
 
         return payload;
     }

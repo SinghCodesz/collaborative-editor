@@ -445,7 +445,7 @@
     function handleRemoteOperation(payload) {
         if (payload.type === 'Rate_Limited') {
             if (payload.userId === userId) {
-                handlrRateLimited();
+                handleRateLimited();
             }
             return;
         }
@@ -458,7 +458,7 @@
 
         isRemoteChange = true;
         var editor = document.getElementById('editor');
-        var text = editor.innerText || editor.textContent;
+        var text = editor.innerText || '';
 
         if (payload.type === 'INSERT') {
             text = text.substring(0, payload.position) +
