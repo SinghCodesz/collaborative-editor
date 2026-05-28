@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Load Test</title>
+    <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
+    <style>
+        body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #e0e0e0; }
+        h1 { color: #00d4ff; }
+        .stats { background: #16213e; padding: 15px; border-radius: 8px; margin: 10px 0; }
+        .stat { margin: 5px 0; }
+        .stat span { color: #00d4ff; font-weight: bold; }
+        button {
+            padding: 10px 20px; margin: 5px; border: none; border-radius: 5px;
+            cursor: pointer; font-size: 14px;
+        }
+        .start { background: #00d4ff; color: #1a1a2e; }
+        .stop { background: #ff4757; color: white; }
+        #log {
+            background: #0f0f23; padding: 10px; border-radius: 5px;
+            height: 300px; overflow-y: auto; font-size: 12px; margin-top: 10px;
+        }
+        .success { color: #2ed573; }
+        .error { color: #ff4757; }
+        .info { color: #00d4ff; }
+    </style>
+</head>
+<body>
+<h1>⚡ Collaborative Editor — Load Test</h1>
+
+<div class="stats">
+    <div class="stat">Active Connections: <span id="activeConnections">0</span></div>
+    <div class="stat">Messages Sent: <span id="messagesSent">0</span></div>
+    <div class="stat">Messages Received: <span id="messagesReceived">0</span></div>
+    <div class="stat">Errors: <span id="errors">0</span></div>
+    <div class="stat">Avg Latency: <span id="avgLatency">0</span> ms</div>
+    <div class="stat">Throughput: <span id="throughput">0</span> msg/sec</div>
+</div>
+
+<div>
+    <label>Document ID: <input type="number" id="docId" value="1" style="width:60px"></label>
+    <label>Virtual Users: <input type="number" id="numUsers" value="10" style="width:60px"></label>
+    <label>Messages/sec per user: <input type="number" id="msgRate" value="2" style="width:60px"></label>
+</div>
+
+<div style="margin-top:10px;">
+    <button class="start" onclick="startTest()">▶ Start Load Test</button>
+    <button class="stop" onclick="stopTest()">⏹ Stop</button>
+</div>
+
+<div id="log"></div>
+
+<script>
+    var connections = [];
+    var running = false;
+    var stats = {
+        sent: 0, received: 0, errors: 0,
+        latencies: [], startTime: 0
+    };
+
+    function log(msg, type) {
+        var logEl = document.getElementById('log');
+        var line = document.createElement('div');
+        line.className = type || 'info';
+        line.textContent = new Date().toLocaleTimeString() + ' — ' + msg;
+        logEl.appendChild(line);
+        logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function updateStats() {
+        document.getElementById('activeConnections').textContent =
+            connections.filter(function(c) { return c.connected; }).length;
+        document.getElementById('messagesSent').textContent = stats.sent;
+        document.getElementById('messagesReceived').textContent = stats.received;
+        document.getElementById('errors').textContent = stats.errors;
+
+        if (stats.latencies.length > 0) {
+            var avg = stats.latencies.reduce(function(a,b) { return a+b; }, 0) / stats.latencies.length;
+            document.getElementById('avgLatency').textContent = Math.round(avg);
+        }
+
+        if (stats.startTime > 0) {
+            var elapsed = (Date.now() - stats.startTime) / 1000;
+            var tput = Math.round(stats.received / elapsed);
+            document.getElementById('throughput').textContent = tput;
+        }
+    }
+
+    function createVirtualUser(userId) {
+        var socket = new SockJS('/ws');
+        var client = Stomp.over(socket);
+        client.debug = null;
+
+        var user = {
+            id: userId,
+            connected: false,
+            client: client,
+            interval: null
+        };
+
+        client.connect({}, function() {
+            user.connected = true;
+            log('User ' + userId + ' connected', 'success');
+            updateStats();
+
+            client.subscribe('/topic/document/' +
+                document.getElementById('docId').value, function(msg) {
+                stats.received++;
+                var latency = Date.now() - JSON.parse(msg.body).timestamp;
+                stats.latencies.push(latency);
+                if (stats.latencies.length > 100) stats.latencies.shift();
+                updateStats();
+            });
+        }, function(err) {
+            stats.errors++;
+            user.connected = false;
+            log('User ' + userId + ' error: ' + err, 'error');
+            updateStats();
+        });
+
+        return user;
+    }
+
+    function simulateTyping(user) {
+        if (!user.connected) return;
+
+        var chars = 'abcdefghijklmnopqrstuvwxyz ';
+        var character = chars[Math.floor(Math.random() * chars.length)];
+        var position = Math.floor(Math.random() * 100);
+
+        user.client.send('/app/document/' +
+            document.getElementById('docId').value + '/edit', {},
+            JSON.stringify({
+                type: 'INSERT',
+                position: position,
+                character: character,
+                userId: 'loadtest-' + user.id,
+                timestamp: Date.now(),
+                sequenceNumber: Math.floor(Math.random() * 1000)
+            })
+        );
+        stats.sent++;
+        updateStats();
+    }
+
+    function startTest() {
+        if (running) return;
+        running = true;
+
+        var numUsers = parseInt(document.getElementById('numUsers').value);
+        var msgRate = parseInt(document.getElementById('msgRate').value);
+        var docId = document.getElementById('docId').value;
+
+        stats = { sent: 0, received: 0, errors: 0, latencies: [], startTime: Date.now() };
+
+        log('Starting load test: ' + numUsers + ' users, ' + msgRate + ' msg/sec each', 'info');
+
+        for (var i = 0; i < numUsers; i++) {
+            var user = createVirtualUser(i + 1);
+            connections.push(user);
+
+            // Start sending messages after connection
+            setTimeout(function(u) {
+                var interval = setInterval(function() {
+                    if (!running) {
+                        clearInterval(interval);
+                        return;
+                    }
+                    simulateTyping(u);
+                }, 1000 / msgRate);
+                u.interval = interval;
+            }, 500 * i, user); // Stagger connections
+        }
+
+        // Update stats every second
+        var statsInterval = setInterval(function() {
+            if (!running) {
+                clearInterval(statsInterval);
+                return;
+            }
+            updateStats();
+        }, 1000);
+    }
+
+    function stopTest() {
+        running = false;
+
+        connections.forEach(function(user) {
+            if (user.interval) clearInterval(user.interval);
+            if (user.client && user.connected) {
+                user.client.disconnect();
+            }
+        });
+
+        connections = [];
+        log('Load test stopped.', 'info');
+        updateStats();
+    }
+</script>
+</body>
+</html>

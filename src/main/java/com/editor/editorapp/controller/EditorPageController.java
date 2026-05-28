@@ -31,4 +31,9 @@ public class EditorPageController {
         model.addAttribute("document", doc);
         return "editor";
     }
+
+    @GetMapping("/load-test")
+    public String loadTestPage() {
+        return "load-test";
+    }
 }
