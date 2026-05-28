@@ -157,10 +157,16 @@ public class OTService {
         List<Operation> docOps = recentOps.getOrDefault(documentId, new ArrayList<>());
         List<Operation> concurrent = new ArrayList<>();
 
-        long now = System.currentTimeMillis();
-        long window = 500; // 500ms window for concurrent operations
+        // Create a snapshot to avoid ConcurrentModificationException
+        List<Operation> snapshot;
+        synchronized (docOps) {
+            snapshot = new ArrayList<>(docOps);
+        }
 
-        for (Operation existing : docOps) {
+        long now = System.currentTimeMillis();
+        long window = 500;
+
+        for (Operation existing : snapshot) {
             if (!existing.getUserId().equals(op.getUserId()) &&
                     (now - existing.getTimestamp()) < window) {
                 concurrent.add(existing);
@@ -174,12 +180,16 @@ public class OTService {
      * Store an operation in the recent operations buffer.
      */
     private void storeOperation(Long documentId, Operation op) {
-        recentOps.computeIfAbsent(documentId, k -> new ArrayList<>()).add(op);
+        List<Operation> docOps = recentOps.computeIfAbsent(documentId, k -> new ArrayList<>());
 
-        // Cleanup old operations (older than 2 seconds)
-        recentOps.get(documentId).removeIf(
-                existing -> System.currentTimeMillis() - existing.getTimestamp() > 2000
-        );
+        synchronized (docOps) {
+            docOps.add(op);
+
+            // Cleanup old operations (older than 2 seconds)
+            docOps.removeIf(
+                    existing -> System.currentTimeMillis() - existing.getTimestamp() > 2000
+            );
+        }
     }
 
     /**
